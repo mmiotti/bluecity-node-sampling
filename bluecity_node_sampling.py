@@ -185,6 +185,8 @@ def sample_od_pairs(nodes: pd.Series,
 
 @timeit
 def main():
+    # CONFIGURATION
+
     # Maximum number of nodes for which travel time matrix is calculated and which are considered in sampling process.
     n_nodes_preprocess = 1000
 
@@ -224,7 +226,7 @@ def main():
         raise ValueError("Number of nodes for which travel time matrix is calculated should be at least 5% higher than "
                          "desired number of origins/destinations in od pairs.")
 
-    # Prepare data
+    # STEP 1: Prepare data
     rng = np.random.RandomState(seed)
     g = load_network()
     length, speed_kph = load_edge_attributes(g)
@@ -233,7 +235,7 @@ def main():
     h, idx_maps = networkx_to_igraph_with_indices(g)
     nodes_ig = [idx_maps['node_nx_to_ig'][idx] for idx in nodes.index]
 
-    # Calculate betweenness centrality using matrix node sample
+    # STEP 2: Calculate betweenness centrality using matrix node sample
     bc_dict = edge_betweenness_igraph(h, daily_km_driven, weights=edge_weight_default,
                                       sources=nodes_ig, targets=nodes_ig)
     betweenness = {idx_maps['edge_ig_to_nx'][idx]: bc for idx, bc in bc_dict.items()}
@@ -243,16 +245,16 @@ def main():
     duration = nx.get_edge_attributes(g, edge_weight_bc)
     h.es[edge_weight_bc] = [duration[idx_maps['edge_ig_to_nx'][idx]] for idx in h.get_edgelist()]
 
-    # Calculate travel time matrix and express matrix in terms of networkx IDs
+    # STEP 3: Calculate travel time matrix and express matrix in terms of networkx IDs
     t_matrix = travel_time_matrix_igraph(h, nodes_ig, edge_weight_bc)
     t_matrix_dict = igraph_matrix_to_dict(t_matrix, nodes_ig, idx_maps)
-
     # ONLY FOR TESTING: Verify that igraph distance matrix produced (including node mapping back to nx) matches expected results
     # t_matrix_nx = travel_time_matrix_nx(g, edge_weight_bc, t_matrix_dict)
 
-    # Sample final OD pairs based on travel time matrix
+    # STEP 4: Sample final OD pairs based on travel time matrix
     od_pairs = sample_od_pairs(nodes, rng, n_nodes_od, node_weight_col, lognorm_mu, lognorm_sigma, t_matrix_dict)
-    # do something with od_pairs...
+
+    # STEP 5: do something with od_pairs...
 
 
 if __name__ == '__main__':
