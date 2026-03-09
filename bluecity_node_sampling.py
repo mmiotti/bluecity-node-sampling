@@ -49,19 +49,25 @@ def load_network() -> nx.MultiDiGraph:
 
 
 @timeit
-def load_edge_attributes(g: nx.MultiDiGraph) -> tuple[pd.Series, pd.Series]:
+def load_edge_attributes(g: nx.MultiDiGraph) -> pd.DataFrame:
     """Obtain length and speed edge attributes from networkx graph."""
 
     length = pd.Series(nx.get_edge_attributes(g, 'length'), name='length')
+    # Get number of lanes on each network edge and make sure value is an integer (not NaN, and not a list)
+    lanes = nx.get_edge_attributes(g, 'lanes')
+    lanes = pd.Series({idx: lanes.get(idx, 2) for idx in length.index}, name='lanes').fillna(2)
+    lanes = lanes.apply(lambda v: v[0] if isinstance(v, list) else v).astype(int)
     speed_kph = pd.Series(nx.get_edge_attributes(g, 'speed_kph'), name='speed_kph')
-    return length, speed_kph
+    df = pd.concat([length, lanes, speed_kph], axis=1)
+    if pd.isnull(df).sum().sum() > 0:
+        raise ValueError('Edge attributes contain NaNs.')
+    return df
 
 
 @timeit
 def assign_edge_weight(g: nx.MultiDiGraph,
                        weight_name: str,
-                       length: pd.Series,
-                       speed_kph: pd.Series,
+                       edge_attr: pd.DataFrame,
                        betweenness: None | pd.Series,
                        betweenness_to_slowdown: None | int | float):
     """Assign edge weight to networkx graph representing travel time on each edge.
@@ -72,8 +78,12 @@ def assign_edge_weight(g: nx.MultiDiGraph,
     """
 
     if betweenness is not None and betweenness_to_slowdown:
-        speed_kph = speed_kph / (1 + betweenness / betweenness_to_slowdown)
-    weight = length / (speed_kph / 3.6)
+        speed_kph_new = edge_attr['speed_kph'] / (1 + betweenness / edge_attr['lanes'] / betweenness_to_slowdown)
+        speed_reduction = (edge_attr['speed_kph'] - speed_kph_new) / edge_attr['speed_kph'] * 100
+        logging.info(f'Average speed reduction: {speed_reduction.mean():.1f}% / Max: {speed_reduction.max():.1f}%')
+        weight = edge_attr['length'] / (speed_kph_new / 3.6)
+    else:
+        weight = edge_attr['length'] / (edge_attr['speed_kph'] / 3.6)
     nx.set_edge_attributes(g, weight.to_dict(), weight_name)
     return g
 
@@ -169,14 +179,15 @@ def sample_od_pairs(nodes: pd.Series,
                     t_matrix_dict: dict[int, dict[int, float]]) -> dict[int, list[int]]:
     """Sample set of OD pairs to be used to calculate final flows on network."""
 
-    origins = list(nodes.sample(n_samples, random_state=rng, replace=False, weights=nodes).index)
+    # Here, we sample WITH replacement since it's very much ok and feasible that one node is sampled twice.
+    origins = list(nodes.sample(n_samples, random_state=rng, replace=True, weights=nodes).index)
     od_pairs = {}
     for origin in origins:
         times = [t_matrix_dict[origin][dest] for dest in nodes.index]
         time_weights = lognorm.pdf(times, s=lognorm_sigma, scale=np.exp(lognorm_mu))
         weights = nodes * time_weights
         try:
-            od_pairs[origin] = list(nodes.sample(n_samples, random_state=rng, replace=False, weights=weights).index)
+            od_pairs[origin] = list(nodes.sample(n_samples, random_state=rng, replace=True, weights=weights).index)
         except ValueError:
             logging.info(f'Failed to sample destinations for origin {origin}. Likely, travel times could not be '
                          f'computed (is node not connected to network?)')
@@ -199,8 +210,10 @@ def main():
     # by each car. E.g. 250,000 (population) * 0.5 (ownership) * 10 (km/car/day) = 1250000
     daily_km_driven = 1_250_000
 
-    # At the following betweenness value (veh/day), travel times on that edge are doubled (50% slowdown).
-    betweenness_to_slowdown = 20_000
+    # At the following betweenness value (veh/day/lane), travel times on that edge are doubled (50% slowdown). For
+    # example, if the value is 50,000, and betweenness is estimated to be 25,000 vehicles/day/lane on a given edge,
+    # the travel duration on that edge is stretched by 50% (33% slowdown).
+    betweenness_to_slowdown = 50_000
 
     # Column that determines static node weights (e.g. population and employment near each node). If set to 'dummy',
     # all node weights are 1.
@@ -229,8 +242,8 @@ def main():
     # STEP 1: Prepare data
     rng = np.random.RandomState(seed)
     g = load_network()
-    length, speed_kph = load_edge_attributes(g)
-    g = assign_edge_weight(g, edge_weight_default, length, speed_kph, None, None)
+    edge_attr = load_edge_attributes(g)
+    g = assign_edge_weight(g, edge_weight_default, edge_attr, None, None)
     nodes = get_considered_nodes(g, rng, n_nodes_preprocess, node_weight_col)
     h, idx_maps = networkx_to_igraph_with_indices(g)
     nodes_ig = [idx_maps['node_nx_to_ig'][idx] for idx in nodes.index]
@@ -239,9 +252,9 @@ def main():
     bc_dict = edge_betweenness_igraph(h, daily_km_driven, weights=edge_weight_default,
                                       sources=nodes_ig, targets=nodes_ig)
     betweenness = {idx_maps['edge_ig_to_nx'][idx]: bc for idx, bc in bc_dict.items()}
-    betweenness = pd.Series({k: betweenness.get(k, 0) for k in length.index}, name='betweenness')
+    betweenness = pd.Series({k: betweenness.get(k, 0) for k in edge_attr.index}, name='betweenness')
     # Re-calculate edge weights using betweenness centrality and assign those values to igraph network as well
-    g = assign_edge_weight(g, edge_weight_bc, length, speed_kph, betweenness, betweenness_to_slowdown)
+    g = assign_edge_weight(g, edge_weight_bc, edge_attr, betweenness, betweenness_to_slowdown)
     duration = nx.get_edge_attributes(g, edge_weight_bc)
     h.es[edge_weight_bc] = [duration[idx_maps['edge_ig_to_nx'][idx]] for idx in h.get_edgelist()]
 
