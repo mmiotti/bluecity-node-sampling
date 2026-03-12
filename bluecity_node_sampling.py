@@ -269,6 +269,8 @@ def main():
 
     # STEP 5: do something with od_pairs...
 
+    return od_pairs
+
 
 if __name__ == '__main__':
     main()
