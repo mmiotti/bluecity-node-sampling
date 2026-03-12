@@ -1,0 +1,20 @@
+[project]
+name = "bluecity-node-sampling"
+version = "0.1.0"
+description = "Node sampling for the bluecity project"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "igraph>=1.0.0",
+    "matplotlib>=3.10.8",
+    "networkx>=3.6.1",
+    "numpy>=2.4.3",
+    "osmnx>=2.1.0",
+    "pandas>=3.0.1",
+    "scipy>=1.17.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.5",
+]
